@@ -7,49 +7,49 @@ import re
 app = Flask(__name__)
 CORS(app)
 
-# Configurazione Ollama
+# Ollama Configuration
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "mistral:7b"
 
 def clean_json_response(text):
-    """Pulisce e estrae JSON dalla risposta, rimuove commenti e converte valute"""
+    """Cleans and extracts JSON from response, removes comments and converts currencies"""
     if not text:
-        return {"error": "Nessuna risposta da Ollama"}
+        return {"error": "No response from Ollama"}
     
     try:
-        # Rimuovi commenti (//) dal testo
-        text = re.sub(r'//.*', '', text)  # Rimuove i commenti
+        # Remove comments (//) from text
+        text = re.sub(r'//.*', '', text)  # Removes comments
         
-        # Cerca il primo { e l'ultimo }
+        # Find the first { and the last }
         start_index = text.find('{')
         end_index = text.rfind('}')
         
         if start_index != -1 and end_index != -1:
             json_str = text[start_index:end_index+1]
             
-            # Converti Yen in Euro (approssimativo)
+            # Convert Yen to Euro (approximate)
             json_str = re.sub(r'¥(\d+)', lambda m: f"€{int(m.group(1)) // 130}", json_str)
             
-            # Pulizia base
+            # Basic cleaning
             json_str = re.sub(r',\s*}', '}', json_str)
             json_str = re.sub(r',\s*]', ']', json_str)
             
             return json.loads(json_str)
     except json.JSONDecodeError as e:
-        print(f"Errore parsing JSON: {e}")
-        print(f"Testo ricevuto (pulito): {text}")
+        print(f"JSON parsing error: {e}")
+        print(f"Received text (cleaned): {text}")
         
-        # Prova a estrarre dati parziali
+        # Try to extract partial data
         return extract_partial_data(text)
     
-    return {"error": "Impossibile generare JSON valido"}
+    return {"error": "Cannot generate valid JSON"}
 
 def extract_partial_data(text):
-    """Estrae dati parziali dal JSON incompleto"""
+    """Extracts partial data from incomplete JSON"""
     try:
         result = {}
         
-        # Estrai campi base
+        # Extract basic fields
         destination_match = re.search(r'"destination":\s*"([^"]+)"', text)
         days_match = re.search(r'"total_days":\s*(\d+)', text)
         budget_match = re.search(r'"total_budget":\s*"([^"]+)"', text)
@@ -59,16 +59,16 @@ def extract_partial_data(text):
         if days_match:
             result["total_days"] = int(days_match.group(1))
         if budget_match:
-            # Converti Yen in Euro se necessario
+            # Convert Yen to Euro if necessary
             budget = budget_match.group(1)
             if '¥' in budget:
                 yen_amount = int(re.search(r'¥(\d+)', budget).group(1))
-                euro_amount = yen_amount // 130  # Conversione approssimativa
+                euro_amount = yen_amount // 130  # Approximate conversion
                 result["total_budget"] = f"€{euro_amount}"
             else:
                 result["total_budget"] = budget
         
-        # Estrai itinerario
+        # Extract itinerary
         itinerary = []
         day_pattern = r'{\s*"day":\s*(\d+)[^}]*}'
         day_matches = re.findall(day_pattern, text)
@@ -78,11 +78,11 @@ def extract_partial_data(text):
                 day_num = int(day_str)
                 activities = []
                 
-                # Estrai attività per questo giorno
+                # Extract activities for this day
                 activity_pattern = r'"activity":\s*"([^"]+)"'
                 activity_matches = re.findall(activity_pattern, text)
                 
-                for i, activity in enumerate(activity_matches[:3]):  # Max 3 attività per giorno
+                for i, activity in enumerate(activity_matches[:3]):  # Max 3 activities per day
                     times = ["09:00", "14:00", "19:00"]
                     activities.append({
                         "time": times[i] if i < len(times) else "10:00",
@@ -100,15 +100,15 @@ def extract_partial_data(text):
         if itinerary:
             result["itinerary"] = itinerary
         
-        result["note"] = "Itinerario parziale - alcuni dettagli potrebbero mancare"
+        result["note"] = "Partial itinerary - some details may be missing"
         return result
         
     except Exception as e:
-        print(f"Errore estrazione dati parziali: {e}")
-        return {"error": "Impossibile estrarre dati dalla risposta"}
+        print(f"Partial data extraction error: {e}")
+        return {"error": "Cannot extract data from response"}
 
 def generate_with_ollama(prompt):
-    """Genera contenuto usando Ollama"""
+    """Generates content using Ollama"""
     payload = {
         "model": MODEL_NAME,
         "prompt": prompt,
@@ -122,104 +122,104 @@ def generate_with_ollama(prompt):
     }
     
     try:
-        print("Invio richiesta a Mistral 7B...")
+        print("Sending request to Mistral 7B...")
         response = requests.post(OLLAMA_URL, json=payload)
         response.raise_for_status()
         
         result = response.json()
         ai_response = result.get('response', '')
-        print(f"Risposta ricevuta: {len(ai_response)} caratteri")
+        print(f"Response received: {len(ai_response)} characters")
         
         return clean_json_response(ai_response)
         
     except requests.exceptions.Timeout:
-        print("Timeout: Mistral ha impiegato troppo tempo")
-        return {"error": "Timeout - Il modello è troppo lento"}
+        print("Timeout: Mistral took too long")
+        return {"error": "Timeout - Model is too slow"}
     except requests.exceptions.RequestException as e:
-        print(f"Errore connessione: {e}")
-        return {"error": "Ollama non raggiungibile"}
+        print(f"Connection error: {e}")
+        return {"error": "Ollama not reachable"}
     except Exception as e:
-        print(f"Errore generico: {e}")
+        print(f"Generic error: {e}")
         return {"error": str(e)}
 
 @app.route('/generate-itinerary', methods=['POST'])
 def generate_itinerary():
-    """Endpoint per generare itinerari"""
+    """Endpoint to generate itineraries"""
     try:
         data = request.get_json()
         
-        # Validazione
+        # Validation
         required_fields = ['days', 'interests', 'budget', 'destination']
         for field in required_fields:
             if field not in data:
-                return jsonify({"error": f"Campo mancante: {field}"}), 400
+                return jsonify({"error": f"Missing field: {field}"}), 400
         
-        # Prompt MIGLIORATO - specifica di usare Euro e niente commenti
-        prompt = f"""<s>[INST] Genera un itinerario di viaggio in JSON valido. Solo JSON, nessun altro testo.
+        # IMPROVED prompt - specifies to use Euros and no comments
+        prompt = f"""<s>[INST] Generate a travel itinerary in valid JSON. Only JSON, no other text.
 
-IMPORTANTE:
-1. Usa SOLO Euro (€) come valuta, non Yen o altre valute
-2. NO commenti (//) nel JSON
-3. Segui ESATTAMENTE la struttura richiesta
+IMPORTANT:
+1. Use ONLY Euros (€) as currency, not Yen or other currencies
+2. NO comments (//) in JSON
+3. Follow EXACTLY the required structure
 
-DESTINAZIONE: {data['destination']}
-GIORNI: {data['days']}
-INTERESSI: {', '.join(data['interests'])}
+DESTINATION: {data['destination']}
+DAYS: {data['days']}
+INTERESTS: {', '.join(data['interests'])}
 BUDGET: {data['budget']}
 
-STRUTTURA JSON (segui ESATTAMENTE):
+JSON STRUCTURE (follow EXACTLY):
 {{
   "destination": "string",
   "total_days": number,
-  "total_budget": "string (solo in Euro €)",
+  "total_budget": "string (only in Euros €)",
   "itinerary": [
     {{
       "day": number,
-      "morning": {{"activity": "string", "time": "HH:MM", "cost": "string (solo Euro €)"}},
-      "afternoon": {{"activity": "string", "time": "HH:MM", "cost": "string (solo Euro €)"}},
-      "evening": {{"activity": "string", "time": "HH:MM", "cost": "string (solo Euro €)"}}
+      "morning": {{"activity": "string", "time": "HH:MM", "cost": "string (only Euros €)"}},
+      "afternoon": {{"activity": "string", "time": "HH:MM", "cost": "string (only Euros €)"}},
+      "evening": {{"activity": "string", "time": "HH:MM", "cost": "string (only Euros €)"}}
     }}
   ],
-  "accommodation": {{"name": "string", "cost": "string (solo Euro €)"}},
+  "accommodation": {{"name": "string", "cost": "string (only Euros €)"}},
   "tips": ["string"]
 }}
 
-Esempio CORRETTO:
+CORRECT EXAMPLE:
 {{
-  "destination": "Roma",
+  "destination": "Rome",
   "total_days": 2,
   "total_budget": "€300",
   "itinerary": [
     {{
       "day": 1,
-      "morning": {{"activity": "Colosseo", "time": "09:00", "cost": "€16"}},
-      "afternoon": {{"activity": "Foro Romano", "time": "14:00", "cost": "€12"}},
-      "evening": {{"activity": "Cena Trastevere", "time": "20:00", "cost": "€35"}}
+      "morning": {{"activity": "Colosseum", "time": "09:00", "cost": "€16"}},
+      "afternoon": {{"activity": "Roman Forum", "time": "14:00", "cost": "€12"}},
+      "evening": {{"activity": "Dinner in Trastevere", "time": "20:00", "cost": "€35"}}
     }}
   ],
-  "accommodation": {{"name": "Hotel Centro", "cost": "€80/notte"}},
-  "tips": ["Prenotare biglietti online"]
+  "accommodation": {{"name": "Central Hotel", "cost": "€80/night"}},
+  "tips": ["Book tickets online"]
 }}
 
-ORA GENERA PER: {data['destination']}, {data['days']} giorni, budget {data['budget']} - USA SOLO EURO € [/INST]"""
+NOW GENERATE FOR: {data['destination']}, {data['days']} days, budget {data['budget']} - USE ONLY EUROS € [/INST]"""
         
-        # Genera con Ollama
+        # Generate with Ollama
         itinerary = generate_with_ollama(prompt)
         
-        # Se c'è errore, fallback
+        # If there's an error, use fallback
         if "error" in itinerary:
-            print("Usando fallback a causa di errore AI")
+            print("Using fallback due to AI error")
             return jsonify(generate_fallback_itinerary(data))
         
-        print("Itinerario generato con successo dall'AI!")
+        print("Itinerary successfully generated by AI!")
         return jsonify(itinerary)
         
     except Exception as e:
-        print(f"Errore interno: {e}")
+        print(f"Internal error: {e}")
         return jsonify(generate_fallback_itinerary(data))
 
 def generate_fallback_itinerary(data):
-    """Itinerario di fallback quando l'AI non funziona"""
+    """Fallback itinerary when AI doesn't work"""
     return {
         "destination": data['destination'],
         "total_days": data['days'],
@@ -228,36 +228,36 @@ def generate_fallback_itinerary(data):
             {
                 "day": day,
                 "morning": {
-                    "activity": f"Visita attrazione principale giorno {day}",
+                    "activity": f"Main attraction visit day {day}",
                     "time": "09:30",
                     "cost": "€20"
                 },
                 "afternoon": {
-                    "activity": f"Esplorazione zona centrale giorno {day}",
+                    "activity": f"City center exploration day {day}",
                     "time": "14:00", 
                     "cost": "€15"
                 },
                 "evening": {
-                    "activity": f"Cena tipica giorno {day}",
+                    "activity": f"Traditional dinner day {day}",
                     "time": "19:30",
                     "cost": "€30"
                 }
             } for day in range(1, data['days'] + 1)
         ],
         "accommodation": {
-            "name": f"Hotel Centrale {data['destination']}",
-            "cost": f"€{80 + data['days'] * 10}/notte"
+            "name": f"Central Hotel {data['destination']}",
+            "cost": f"€{80 + data['days'] * 10}/night"
         },
         "tips": [
-            "Prenotare in anticipo le attività principali",
-            "Portare contanti per piccoli acquisti",
-            "Scaricare mappe offline della città"
+            "Book main activities in advance",
+            "Carry cash for small purchases",
+            "Download offline city maps"
         ]
     }
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Verifica che Ollama sia attivo"""
+    """Check if Ollama is active"""
     try:
         response = requests.get("http://localhost:11434/api/tags", timeout=10)
         models = response.json().get('models', [])
@@ -272,15 +272,15 @@ def health_check():
     except:
         return jsonify({
             "status": "ollama_not_running",
-            "message": "Esegui 'ollama serve' in un terminale"
+            "message": "Run 'ollama serve' in a terminal"
         }), 500
 
 if __name__ == '__main__':
-    print("🚀 API Travel Planner con Mistral 7B")
-    print("📍 Server in esecuzione su http://localhost:8000")
+    print("🚀 Travel Planner API with Mistral 7B")
+    print("📍 Server running on http://localhost:8000")
     print("📋 Endpoints:")
-    print("   GET  /health        - Stato del server")
-    print("   POST /generate-itinerary - Genera itinerario")
+    print("   GET  /health        - Server status")
+    print("   POST /generate-itinerary - Generate itinerary")
     print("")
-    print("⚡ Usando modello: mistral:7b")
+    print("⚡ Using model: mistral:7b")
     app.run(debug=True, port=8000, host='0.0.0.0')
