@@ -9,11 +9,34 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONObject, ResponseFormatJSONSchema
 
-from app.llm.base import ChatMessage, JsonSchema, LLMError, LLMResult, StreamChunk, Usage
+from app.llm.base import (
+    ChatMessage,
+    JsonSchema,
+    LLMError,
+    LLMOutputRejectedError,
+    LLMResult,
+    StreamChunk,
+    Usage,
+)
 
 logger = logging.getLogger(__name__)
 
 ResponseFormat = Literal["json_object", "json_schema"]
+
+# Error codes meaning "the model wrote an invalid answer", not "the provider is down".
+# Groq validates JSON mode server-side and returns the rejected text as failed_generation.
+_REJECTED_OUTPUT_CODES = {"json_validate_failed"}
+
+
+def _to_llm_error(exc: openai.APIError) -> LLMError:
+    if exc.code not in _REJECTED_OUTPUT_CODES:
+        return LLMError(str(exc))
+    body = exc.body if isinstance(exc.body, dict) else {}
+    error = body.get("error", body)
+    failed = error.get("failed_generation") if isinstance(error, dict) else None
+    failed_output = failed if isinstance(failed, str) else ""
+    logger.warning("Provider rejected the model output (%s): %.300s", exc.code, failed_output)
+    return LLMOutputRejectedError(str(exc), failed_output=failed_output)
 
 
 class OpenAICompatibleClient:
@@ -72,7 +95,7 @@ class OpenAICompatibleClient:
             )
         except openai.APIError as exc:
             logger.warning("LLM provider error: %s", exc)
-            raise LLMError(str(exc)) from exc
+            raise _to_llm_error(exc) from exc
 
         if not response.choices:
             raise LLMError("LLM returned no choices")
@@ -116,7 +139,7 @@ class OpenAICompatibleClient:
                     yield StreamChunk(content=content or "", usage=usage)
         except openai.APIError as exc:
             logger.warning("LLM provider error while streaming: %s", exc)
-            raise LLMError(str(exc)) from exc
+            raise _to_llm_error(exc) from exc
 
     async def aclose(self) -> None:
         await self._client.close()

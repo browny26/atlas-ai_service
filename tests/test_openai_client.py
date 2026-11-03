@@ -6,7 +6,7 @@ import httpx2  # HTTP library used by the openai SDK v3
 import pytest
 from openai import AsyncOpenAI
 
-from app.llm.base import JsonSchema, LLMError
+from app.llm.base import JsonSchema, LLMError, LLMOutputRejectedError
 from app.llm.openai_compatible import OpenAICompatibleClient, ResponseFormat
 
 
@@ -132,3 +132,45 @@ async def test_stream_yields_content_and_usage() -> None:
     assert "".join(c.content for c in chunks) == '{"a": 1}'
     assert chunks[-1].usage is not None
     assert chunks[-1].usage.total_tokens == 15
+
+
+async def test_groq_json_validation_failure_is_a_rejected_output() -> None:
+    # Groq validates JSON mode server-side: the model wrote broken JSON, the provider is fine.
+    error = {
+        "error": {
+            "message": "Failed to validate JSON. Please adjust your prompt.",
+            "type": "invalid_request_error",
+            "code": "json_validate_failed",
+            "failed_generation": '{"days": [',
+        }
+    }
+    client = make_client(httpx2.MockTransport(lambda _: httpx2.Response(400, json=error)))
+
+    with pytest.raises(LLMOutputRejectedError) as raised:
+        await client.complete_json([{"role": "user", "content": "hi"}])
+
+    assert raised.value.failed_output == '{"days": ['
+
+
+async def test_other_bad_requests_are_plain_llm_errors() -> None:
+    error = {"error": {"message": "model not found", "code": "model_not_found"}}
+    client = make_client(httpx2.MockTransport(lambda _: httpx2.Response(404, json=error)))
+
+    with pytest.raises(LLMError) as raised:
+        await client.complete_json([{"role": "user", "content": "hi"}])
+
+    assert not isinstance(raised.value, LLMOutputRejectedError)
+
+
+async def test_json_validation_failure_during_a_stream_is_a_rejected_output() -> None:
+    # While streaming, Groq reports the failed validation as an error event at the end.
+    error = {"error": {"message": "Failed to validate JSON", "code": "json_validate_failed"}}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = f"data: {json.dumps(error)}\n\n"
+        return httpx2.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    client = make_client(httpx2.MockTransport(handler))
+
+    with pytest.raises(LLMOutputRejectedError):
+        _ = [c async for c in client.stream_json([{"role": "user", "content": "hi"}])]
