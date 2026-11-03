@@ -36,7 +36,18 @@ class Assessment:
         return self.rank() < other.rank()
 
 
-def normalize_name(name: str) -> str:
+# hyphen, en dash, em dash, opening parenthesis, colon
+_DETAIL_SEPARATORS = (" - ", " \u2013 ", " \u2014 ", " (", ": ")
+
+
+def normalize_name(description: str) -> str:
+    """The place itself, without the practical details that follow it.
+
+    "Colosseum - book online" and "Colosseum - guided tour" are the same place.
+    """
+    name = description
+    for separator in _DETAIL_SEPARATORS:
+        name = name.split(separator, 1)[0]
     return " ".join(name.lower().split())
 
 

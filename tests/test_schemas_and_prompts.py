@@ -100,3 +100,21 @@ def test_prompt_contains_the_budget_plan_for_one_traveler() -> None:
     assert payload["budget_plan"]["max_total_eur"] == 950
     assert payload["budget_plan"]["target_total_eur"] == 850
     assert "MUST NOT exceed" in SYSTEM_PROMPT
+
+
+def test_budget_figures_are_rounded_down_to_cents() -> None:
+    tiny = plan_budget(ItineraryRequest(destination="Rome", days=1, budget_eur=1.6))
+    assert tiny.max_total_eur == 1.52  # never above the real budget
+    assert tiny.target_total_eur <= tiny.max_total_eur
+
+    long_cheap = plan_budget(ItineraryRequest(destination="Rome", days=14, budget_eur=20))
+    allocated = (
+        long_cheap.accommodation_per_night_target_eur * long_cheap.nights
+        + long_cheap.daily_activities_and_meals_target_eur * 14
+    )
+    assert allocated <= long_cheap.target_total_eur
+
+    assert (
+        plan_budget(ItineraryRequest(destination="Rome", days=3, budget_eur=600)).target_total_eur
+        == 510
+    )

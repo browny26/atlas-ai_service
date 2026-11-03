@@ -5,6 +5,7 @@ totals and budget status are never taken from the model's answer, and the budget
 model must respect is given to it as concrete euro amounts computed here.
 """
 
+import math
 from dataclasses import dataclass
 
 from app.schemas.itinerary import BudgetStatus, ItineraryRequest, LLMItinerary
@@ -14,6 +15,12 @@ TARGET_SHARE = 0.85
 MAX_SHARE = 0.95
 # Typical split of the target between accommodation and the rest (activities, meals).
 ACCOMMODATION_SHARE = 0.40
+
+
+def floor_cents(amount: float) -> float:
+    """Budget figures are rounded down: rounding must never let a plan spend more."""
+    # round() first removes floating-point noise (600 * 0.85 = 509.99999999999994).
+    return math.floor(round(amount * 100, 6)) / 100
 
 
 def nights_for(days: int) -> int:
@@ -47,11 +54,11 @@ def plan_budget(request: ItineraryRequest) -> BudgetPlan:
     target = request.budget_eur * TARGET_SHARE
     return BudgetPlan(
         total_budget_eur=request.budget_eur,
-        target_total_eur=round(target),
-        max_total_eur=round(request.budget_eur * MAX_SHARE),
+        target_total_eur=floor_cents(target),
+        max_total_eur=floor_cents(request.budget_eur * MAX_SHARE),
         nights=nights,
-        accommodation_per_night_target_eur=round(target * ACCOMMODATION_SHARE / nights),
-        daily_activities_and_meals_target_eur=round(
+        accommodation_per_night_target_eur=floor_cents(target * ACCOMMODATION_SHARE / nights),
+        daily_activities_and_meals_target_eur=floor_cents(
             target * (1 - ACCOMMODATION_SHARE) / request.days
         ),
     )

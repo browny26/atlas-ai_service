@@ -128,3 +128,32 @@ async def test_fallback_template_stays_under_budget() -> None:
 
     assert result.metadata.source is Source.FALLBACK
     assert result.total_estimated_cost_eur <= REQUEST.budget_eur * 0.85 + 1
+
+
+async def test_fallback_template_stays_under_budget_on_long_cheap_trips() -> None:
+    request = ItineraryRequest(destination="Rome", days=14, budget_eur=20)
+
+    result = await make_service(FakeLLM(LLMError("down"))).generate(request)
+
+    assert result.total_estimated_cost_eur <= 20 * 0.85
+
+
+async def test_provider_failure_after_a_valid_answer_keeps_that_answer() -> None:
+    over = plan_json(days=2, activity_cost=100, night_cost=100)  # valid but over budget
+    llm = FakeLLM(over, LLMError("rate limited"))
+
+    result = await make_service(llm).generate(REQUEST)
+
+    assert result.metadata.source is Source.LLM  # not the generic fallback
+    assert result.total_estimated_cost_eur == 700
+
+
+async def test_same_place_with_different_details_counts_as_a_repetition() -> None:
+    plan = make_plan(days=2)
+    plan["days"][0]["morning"]["activity"] = "Colosseum - book online"
+    plan["days"][1]["morning"]["activity"] = "Colosseum - guided tour"
+    llm = FakeLLM(json.dumps(plan), plan_json(days=2))
+
+    await make_service(llm).generate(REQUEST)
+
+    assert "appears more than once" in llm.calls[1][-1]["content"]

@@ -71,9 +71,9 @@ class ItineraryRequest(BaseModel):
 class Activity(BaseModel):
     activity: Text = Field(
         description=(
-            "A specific, real, named place or experience, with a short practical detail "
-            "(e.g. 'Jerónimos Monastery, Belém - book online to skip the queue'). "
-            "Never generic ('visit a museum')."
+            "A specific, real, named place or experience: the place name first, then an "
+            "optional practical detail after ' - ' (e.g. 'Jerónimos Monastery - book online "
+            "to skip the queue'). Never generic ('visit a museum')."
         )
     )
     time: Time = Field(description="Start time, 24h format HH:MM.")

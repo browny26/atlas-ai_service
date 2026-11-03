@@ -260,7 +260,14 @@ class ItineraryService:
         """
         for attempt in range(first_attempt, self._max_attempts + 1):
             stats.attempts = attempt
-            result = await self._llm.complete_json(messages, schema=schema)
+            try:
+                result = await self._llm.complete_json(messages, schema=schema)
+            except LLMError:
+                if best is None:
+                    raise
+                # A usable answer is already in hand: better than a fallback or an error.
+                logger.warning("Provider failed on attempt %d, keeping the best answer", attempt)
+                break
             stats.usage += result.usage
             stats.model = result.model
             try:
@@ -344,7 +351,7 @@ class ItineraryService:
         fixed = others + request.plan.accommodation.cost_per_night_eur * budget.nights
         current = sum(a.cost_eur for a in request.plan.days[request.day - 1].activities)
         room = budget.max_total_eur - fixed
-        if room <= 0:
+        if room < 0:
             # The rest of the plan already uses the whole budget: at least do not make it worse.
             return round(current * 0.8, 2), round(current, 2)
         target = min(max(budget.target_total_eur - fixed, 0), room)

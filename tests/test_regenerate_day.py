@@ -92,6 +92,20 @@ async def test_day_reusing_a_place_from_another_day_is_repaired() -> None:
     assert result.days[1].morning.activity == "Vatican Museums"
 
 
+async def test_no_room_left_means_the_day_must_be_free() -> None:
+    # 500 budget, ceiling 475: day 1 (3 x 65 = 195) + 1 night (280) = 475, no room left.
+    plan = LLMItinerary.model_validate(make_plan(days=2, activity_cost=65, night_cost=280))
+    llm = FakeLLM(new_day(cost=10), new_day(cost=0))
+
+    result = await ItineraryService(llm, max_attempts=2, enable_fallback=True).regenerate_day(
+        make_request(plan=plan)
+    )
+
+    payload = json.loads(llm.calls[0][1]["content"].split("\n", 1)[1])
+    assert payload["max_day_cost_eur"] == 0
+    assert result.days[1].morning.cost_eur == 0
+
+
 async def test_failure_raises_instead_of_falling_back() -> None:
     llm = FakeLLM(LLMError("down"))
 

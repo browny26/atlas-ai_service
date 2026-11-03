@@ -4,10 +4,8 @@ Responses built from it carry metadata.source = "fallback", so callers can tell 
 user the plan is generic, instead of passing it off as an AI result.
 """
 
-import math
-
 from app.schemas.itinerary import Accommodation, Activity, DayPlan, ItineraryRequest, LLMItinerary
-from app.services.budget import plan_budget
+from app.services.budget import floor_cents, plan_budget
 
 
 def build_fallback_plan(request: ItineraryRequest) -> LLMItinerary:
@@ -15,7 +13,7 @@ def build_fallback_plan(request: ItineraryRequest) -> LLMItinerary:
     budget = plan_budget(request)
     per_night = budget.accommodation_per_night_target_eur
     # Rounded down: a template that must stay under budget never rounds up.
-    per_activity = math.floor(budget.daily_activities_and_meals_target_eur / 3 * 100) / 100
+    per_activity = floor_cents(budget.daily_activities_and_meals_target_eur / 3)
     place = request.destination
 
     days = [
