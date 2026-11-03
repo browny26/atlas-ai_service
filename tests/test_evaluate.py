@@ -21,3 +21,4 @@ async def test_summary_and_report() -> None:
     assert summary.first_try == 1
     assert "| Valid itineraries | 1/2 (50%) |" in report
     assert "❌ invalid output" in report
+    assert "| Average budget used | 40% (target 85%) |" in report  # 200 of 500

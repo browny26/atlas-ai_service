@@ -48,6 +48,8 @@ sequenceDiagram
 | **One Pydantic model as the output contract** (`LLMItinerary`) | Its JSON Schema goes into the prompt, and the same model validates the answer, so prompt and parser cannot drift apart. |
 | **JSON mode + Pydantic validation + self-repair** | JSON mode guarantees valid syntax. Pydantic checks the structure (times `HH:MM`, costs ≥ 0, days 1..N). If validation fails, the errors are sent back to the model so it can fix its answer. No regex parsing. |
 | **The LLM proposes, Python calculates** | Costs are numbers (`cost_eur`), not strings like `"€20-40"`. The total and `budget_status` are computed in code, because LLMs are unreliable at arithmetic. |
+| **Budget as concrete numbers** | Python computes a budget plan for one traveler (target 85% of the budget, hard ceiling 95%, per-night and per-day targets) and sends it as euro amounts: models follow explicit numbers far better than percentages or arithmetic. |
+| **Quality loop on valid answers** | After validation, deterministic checks (`services/quality.py`) verify the total against the ceiling, start times against morning/afternoon/evening windows and repeated places. Problems go back to the model with precise feedback ("total €700, above €475: cut at least €275; most expensive: …"). If no attempt is perfect, the best one (closest to the budget) is returned, not the generic fallback. |
 | **`LLMClient` Protocol + dependency injection** | Business logic depends on an interface. Tests inject a `FakeLLM` (no network, no tokens spent). Groq, Ollama or OpenAI can be swapped through configuration, because they all expose an OpenAI-compatible API. |
 | **Two retry levels** | The transport (timeouts, 429, 5xx) is retried with backoff by the SDK. Invalid output is retried by the service. |
 | **Explicit fallback** | If the LLM fails, a template itinerary is returned with `metadata.source = "fallback"`, so the caller is never misled. It can be disabled (`ENABLE_FALLBACK=false` → HTTP 502). |
@@ -74,7 +76,8 @@ app/
 ├── schemas/itinerary.py     # request / LLM output / response models
 ├── services/
 │   ├── itinerary_service.py # use case: prompt → LLM → validate → repair
-│   ├── budget.py            # deterministic cost calculations
+│   ├── budget.py            # budget plan and deterministic cost calculations
+│   ├── quality.py           # budget, time-slot and repetition checks with feedback
 │   ├── cache.py             # LRU/TTL response cache
 │   ├── streaming.py         # finds completed days in a partial JSON stream
 │   └── fallback.py
@@ -137,7 +140,7 @@ Response (shortened):
   "accommodation": { "name": "…", "type": "B&B", "details": "…", "cost_per_night_eur": 110 },
   "tips": ["Book the Colosseum online to skip the queue"],
   "metadata": {
-    "source": "llm", "model": "openai/gpt-oss-20b", "prompt_version": "itinerary-v2",
+    "source": "llm", "model": "openai/gpt-oss-20b", "prompt_version": "itinerary-v4",
     "attempts": 1, "latency_ms": 1840,
     "usage": { "prompt_tokens": 1210, "completion_tokens": 690, "total_tokens": 1900 }
   }

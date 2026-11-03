@@ -1,12 +1,15 @@
 """Itinerary use cases: generate (whole or streamed) and regenerate a single day.
 
-Flow: prompt -> LLM -> validation -> (repair) -> deterministic calculations -> response.
+Flow: prompt -> LLM -> validation -> quality checks -> (repair) -> calculations -> response.
 
-Two kinds of failure are handled at two levels:
+Failures are handled at three levels:
 - transport errors (timeouts, 429, 5xx) are retried by the LLM client;
-- invalid output (wrong structure, wrong number of days) is retried here, by sending the
-  validation errors back to the model and asking it to fix its answer ("self-repair").
-If both fail, a clearly-flagged fallback is returned (or an error, if fallback is disabled).
+- invalid output (wrong structure, wrong number of days) is sent back to the model with
+  the validation errors, so that it fixes its answer ("self-repair");
+- valid output that breaks content rules (over budget, incoherent times, repeated places)
+  is sent back with precise feedback; if no attempt is perfect, the best one is kept.
+Only when no valid itinerary at all is produced, a clearly-flagged fallback is returned
+(or an error, if fallback is disabled).
 """
 
 import logging
@@ -23,10 +26,10 @@ from app.prompts.itinerary import (
     DAY_SCHEMA,
     ITINERARY_SCHEMA,
     PROMPT_VERSION,
+    build_improvement_message,
     build_messages,
     build_regenerate_day_messages,
     build_repair_message,
-    nights_for,
 )
 from app.schemas.itinerary import (
     DayPlan,
@@ -38,9 +41,10 @@ from app.schemas.itinerary import (
     Source,
     TokenUsage,
 )
-from app.services.budget import budget_status, estimate_total_cost
+from app.services.budget import budget_status, estimate_total_cost, nights_for, plan_budget
 from app.services.cache import ItineraryCache, cache_key
 from app.services.fallback import build_fallback_plan
+from app.services.quality import Assessment, assess_day, assess_plan, normalize_name
 from app.services.streaming import DayStreamParser
 
 logger = logging.getLogger(__name__)
@@ -124,12 +128,14 @@ class ItineraryService:
 
         stats = _RunStats()
         source = Source.LLM
+        budget = plan_budget(request)
         try:
             plan = await self._complete_validated(
                 build_messages(request),
                 ITINERARY_SCHEMA,
                 lambda content: parse_plan(content, request.days),
                 stats,
+                assess=lambda p: assess_plan(p, budget),
             )
         except (LLMError, InvalidLLMOutputError) as exc:
             plan, source = self._fallback_or_raise(request, exc)
@@ -146,6 +152,7 @@ class ItineraryService:
 
         stats = _RunStats(attempts=1, model=self._llm.model)
         messages = build_messages(request)
+        budget = plan_budget(request)
         source = Source.LLM
         try:
             parts: list[str] = []
@@ -160,23 +167,40 @@ class ItineraryService:
                         yield StreamEvent("day", _validate(DayPlan, raw_day).model_dump())
             buffer = "".join(parts)
 
+            # The streamed days may still change: the final "result" event is authoritative.
+            follow_up: dict[str, Any] = {}
             try:
                 plan = parse_plan(buffer, request.days)
             except InvalidLLMOutputError as exc:
-                # The streamed days may be wrong: the final "result" event is authoritative.
-                yield StreamEvent("status", {"message": "Fixing the itinerary format..."})
+                follow_up = {"feedback": build_repair_message(str(exc)), "last_error": exc}
+                status = "Fixing the itinerary format..."
+            else:
+                assessment = assess_plan(plan, budget)
+                if not assessment.ok:
+                    logger.info("Streamed plan needs improvements:\n%s", assessment.issues)
+                    follow_up = {
+                        "feedback": build_improvement_message(assessment.issues),
+                        "best": (assessment, plan),
+                    }
+                    status = (
+                        "Adjusting the plan to stay within your budget..."
+                        if assessment.over_budget_eur > 0
+                        else "Polishing the itinerary..."
+                    )
+            if follow_up and self._max_attempts > 1:
+                yield StreamEvent("status", {"message": status})
                 plan = await self._complete_validated(
-                    [
-                        *messages,
-                        {"role": "assistant", "content": buffer},
-                        build_repair_message(str(exc)),
-                    ],
+                    [*messages, {"role": "assistant", "content": buffer}, follow_up["feedback"]],
                     ITINERARY_SCHEMA,
                     lambda content: parse_plan(content, request.days),
                     stats,
+                    assess=lambda p: assess_plan(p, budget),
                     first_attempt=2,
-                    last_error=exc,
+                    last_error=follow_up.get("last_error"),
+                    best=follow_up.get("best"),
                 )
+            elif "last_error" in follow_up:
+                raise follow_up["last_error"]
         except (LLMError, InvalidLLMOutputError) as exc:
             try:
                 plan, source = self._fallback_or_raise(request, exc)
@@ -191,13 +215,20 @@ class ItineraryService:
 
     async def regenerate_day(self, request: RegenerateDayRequest) -> ItineraryResponse:
         stats = _RunStats()
-        target = self._day_target_cost(request)
+        target, maximum = self._day_budget(request)
+        other_names = {
+            normalize_name(a.activity)
+            for d in request.plan.days
+            if d.day != request.day
+            for a in d.activities
+        }
         try:
             new_day = await self._complete_validated(
-                build_regenerate_day_messages(request, target),
+                build_regenerate_day_messages(request, target, maximum),
                 DAY_SCHEMA,
                 lambda content: parse_day(content, request.day),
                 stats,
+                assess=lambda d: assess_day(d, maximum, other_names),
             )
         except (LLMError, InvalidLLMOutputError) as exc:
             # No fallback here: silently returning the unchanged day would mislead the user.
@@ -216,26 +247,55 @@ class ItineraryService:
         parse: Callable[[str], T],
         stats: _RunStats,
         *,
+        assess: Callable[[T], Assessment] | None = None,
         first_attempt: int = 1,
         last_error: InvalidLLMOutputError | None = None,
+        best: tuple[Assessment, T] | None = None,
     ) -> T:
-        """Ask the model until `parse` accepts its answer, feeding back validation errors."""
+        """Ask the model until its answer is valid and passes the quality checks.
+
+        Validation errors and quality issues are sent back as feedback. If attempts run out,
+        the best valid answer seen so far is returned (closest to the budget, fewest issues);
+        only when no answer was valid at all is the last validation error raised.
+        """
         for attempt in range(first_attempt, self._max_attempts + 1):
             stats.attempts = attempt
-            result = await self._llm.complete_json(messages, schema=schema)
+            try:
+                result = await self._llm.complete_json(messages, schema=schema)
+            except LLMError:
+                if best is None:
+                    raise
+                # A usable answer is already in hand: better than a fallback or an error.
+                logger.warning("Provider failed on attempt %d, keeping the best answer", attempt)
+                break
             stats.usage += result.usage
             stats.model = result.model
             try:
-                return parse(result.content)
+                value = parse(result.content)
             except InvalidLLMOutputError as exc:
                 logger.info("Attempt %d/%d invalid output:\n%s", attempt, self._max_attempts, exc)
                 last_error = exc
-                messages = [
-                    *messages,
-                    {"role": "assistant", "content": result.content},
-                    build_repair_message(str(exc)),
-                ]
+                feedback = build_repair_message(str(exc))
+            else:
+                assessment = assess(value) if assess else Assessment()
+                if assessment.ok:
+                    return value
+                logger.info(
+                    "Attempt %d/%d needs improvements:\n%s",
+                    attempt,
+                    self._max_attempts,
+                    "\n".join(assessment.issues),
+                )
+                if best is None or assessment.is_better_than(best[0]):
+                    best = (assessment, value)
+                feedback = build_improvement_message(assessment.issues)
+            messages = [*messages, {"role": "assistant", "content": result.content}, feedback]
 
+        if best is not None:
+            logger.warning(
+                "Using the best of %d attempts, still with: %s", stats.attempts, best[0].issues
+            )
+            return best[1]
         assert last_error is not None  # the loop ran at least once, or the caller passed one
         raise last_error
 
@@ -282,14 +342,20 @@ class ItineraryService:
         return response
 
     @staticmethod
-    def _day_target_cost(request: RegenerateDayRequest) -> float:
-        """Budget left for the day being rewritten, after everything else is paid for."""
-        nights = nights_for(request.trip.days)
+    def _day_budget(request: RegenerateDayRequest) -> tuple[float, float]:
+        """Target and maximum cost for the day being rewritten, given the rest of the plan."""
+        budget = plan_budget(request.trip)
         others = sum(
             a.cost_eur for d in request.plan.days if d.day != request.day for a in d.activities
         )
-        accommodation = request.plan.accommodation.cost_per_night_eur * nights
-        return round(max(request.trip.budget_eur - others - accommodation, 0), 2)
+        fixed = others + request.plan.accommodation.cost_per_night_eur * budget.nights
+        current = sum(a.cost_eur for a in request.plan.days[request.day - 1].activities)
+        room = budget.max_total_eur - fixed
+        if room < 0:
+            # The rest of the plan already uses the whole budget: at least do not make it worse.
+            return round(current * 0.8, 2), round(current, 2)
+        target = min(max(budget.target_total_eur - fixed, 0), room)
+        return round(target, 2), round(room, 2)
 
     @staticmethod
     def _build_response(
