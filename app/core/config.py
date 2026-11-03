@@ -4,6 +4,7 @@ Every tunable value lives here, so the rest of the code never reads os.environ d
 """
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,11 +27,17 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=30.0, gt=0)
     # Transport-level retries (timeouts, 429, 5xx), handled by the OpenAI SDK with backoff.
     llm_max_retries: int = Field(default=2, ge=0)
+    # "json_schema" enables native structured outputs, on models that support them.
+    llm_response_format: Literal["json_object", "json_schema"] = "json_object"
 
     # Output-level attempts: how many times we ask the model to fix an invalid answer.
     generation_max_attempts: int = Field(default=3, ge=1)
     # Return a clearly-flagged template itinerary when the LLM cannot produce a valid one.
     enable_fallback: bool = True
+
+    # In-memory cache of generated itineraries (identical request -> same answer). 0 = disabled.
+    cache_ttl_seconds: int = Field(default=3600, ge=0)
+    cache_max_entries: int = Field(default=256, ge=1)
 
     # Shared secret for service-to-service calls (header X-API-Key). Empty = disabled.
     # No CORS: this service is called only by the backend, never by the browser.

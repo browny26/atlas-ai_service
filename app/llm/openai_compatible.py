@@ -1,15 +1,19 @@
 """LLMClient for any OpenAI-compatible Chat Completions API (Groq, Ollama, OpenAI, ...)."""
 
 import logging
-from typing import cast
+from collections.abc import AsyncIterator
+from typing import Literal, cast
 
 import openai
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
+from openai.types.shared_params import ResponseFormatJSONObject, ResponseFormatJSONSchema
 
-from app.llm.base import ChatMessage, LLMError, LLMResult, Usage
+from app.llm.base import ChatMessage, JsonSchema, LLMError, LLMResult, Usage
 
 logger = logging.getLogger(__name__)
+
+ResponseFormat = Literal["json_object", "json_schema"]
 
 
 class OpenAICompatibleClient:
@@ -23,11 +27,13 @@ class OpenAICompatibleClient:
         max_tokens: int,
         timeout_seconds: float,
         max_retries: int,
+        response_format: ResponseFormat = "json_object",
         client: AsyncOpenAI | None = None,
     ) -> None:
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._response_format = response_format
         # The SDK retries timeouts, 429 and 5xx with exponential backoff.
         self._client = client or AsyncOpenAI(
             base_url=base_url,
@@ -40,16 +46,29 @@ class OpenAICompatibleClient:
     def model(self) -> str:
         return self._model
 
-    async def complete_json(self, messages: list[ChatMessage]) -> LLMResult:
+    def _format(
+        self, schema: JsonSchema | None
+    ) -> ResponseFormatJSONObject | ResponseFormatJSONSchema:
+        # json_schema: the provider constrains generation to the schema (structured outputs),
+        # only on models that support it. json_object (default): valid JSON is guaranteed and
+        # the structure is checked by Pydantic in the service layer either way.
+        if self._response_format == "json_schema" and schema is not None:
+            return {
+                "type": "json_schema",
+                "json_schema": {"name": schema.name, "schema": schema.schema, "strict": False},
+            }
+        return {"type": "json_object"}
+
+    async def complete_json(
+        self, messages: list[ChatMessage], *, schema: JsonSchema | None = None
+    ) -> LLMResult:
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=cast(list[ChatCompletionMessageParam], messages),
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
-                # JSON mode: the provider guarantees syntactically valid JSON.
-                # The structure is still checked by Pydantic in the service layer.
-                response_format={"type": "json_object"},
+                response_format=self._format(schema),
             )
         except openai.APIError as exc:
             logger.warning("LLM provider error: %s", exc)
@@ -71,6 +90,25 @@ class OpenAICompatibleClient:
             model=response.model or self._model,
             usage=usage,
         )
+
+    async def stream_json(
+        self, messages: list[ChatMessage], *, schema: JsonSchema | None = None
+    ) -> AsyncIterator[str]:
+        try:
+            stream = await self._client.chat.completions.create(
+                model=self._model,
+                messages=cast(list[ChatCompletionMessageParam], messages),
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                response_format=self._format(schema),
+                stream=True,
+            )
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except openai.APIError as exc:
+            logger.warning("LLM provider error while streaming: %s", exc)
+            raise LLMError(str(exc)) from exc
 
     async def aclose(self) -> None:
         await self._client.close()

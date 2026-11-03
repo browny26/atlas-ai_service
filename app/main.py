@@ -11,6 +11,7 @@ from app.api.routes import health, itineraries
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.llm.openai_compatible import OpenAICompatibleClient
+from app.services.cache import TTLCache
 
 
 def build_llm_client(settings: Settings) -> OpenAICompatibleClient:
@@ -22,7 +23,14 @@ def build_llm_client(settings: Settings) -> OpenAICompatibleClient:
         max_tokens=settings.llm_max_tokens,
         timeout_seconds=settings.llm_timeout_seconds,
         max_retries=settings.llm_max_retries,
+        response_format=settings.llm_response_format,
     )
+
+
+def build_cache(settings: Settings) -> TTLCache | None:
+    if settings.cache_ttl_seconds == 0:
+        return None
+    return TTLCache(ttl_seconds=settings.cache_ttl_seconds, max_entries=settings.cache_max_entries)
 
 
 @asynccontextmanager
@@ -38,6 +46,7 @@ def create_app() -> FastAPI:
     configure_logging(settings.log_level)
 
     app = FastAPI(title=settings.app_name, version=__version__, lifespan=lifespan)
+    app.state.cache = build_cache(settings)
     app.include_router(health.router)
     app.include_router(itineraries.router)
     register_exception_handlers(app)

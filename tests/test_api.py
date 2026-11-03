@@ -1,10 +1,12 @@
+import json
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_llm_client
 from app.core.config import Settings
 from app.llm.base import LLMError
-from tests.conftest import FakeLLM
+from tests.conftest import FakeLLM, make_plan
 
 PAYLOAD = {"destination": "Rome", "days": 2, "budget_eur": 500, "interests": ["food"]}
 
@@ -27,6 +29,31 @@ def test_generate_itinerary(client: TestClient) -> None:
     assert body["metadata"]["source"] == "llm"
 
 
+def test_stream_endpoint_sends_server_sent_events(client: TestClient) -> None:
+    with client.stream("POST", "/v1/itineraries/stream", json=PAYLOAD) as response:
+        body = "".join(response.iter_text())
+
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = [
+        line.removeprefix("event: ") for line in body.splitlines() if line.startswith("event:")
+    ]
+    assert events == ["day", "day", "result"]
+
+
+def test_regenerate_day_endpoint(app: FastAPI, client: TestClient) -> None:
+    plan = make_plan(days=2)
+    new_day = {**plan["days"][0], "day": 2}
+    app.dependency_overrides[get_llm_client] = lambda: FakeLLM(json.dumps(new_day))
+
+    response = client.post(
+        "/v1/itineraries/regenerate-day",
+        json={"trip": PAYLOAD, "plan": plan, "day": 2, "feedback": "less walking"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["days"][1]["morning"]["activity"] == "Museum 1"
+
+
 def test_invalid_request_returns_422(client: TestClient) -> None:
     response = client.post("/v1/itineraries", json={**PAYLOAD, "days": 99})
 
@@ -40,7 +67,9 @@ def test_missing_api_key_returns_401(client: TestClient) -> None:
 
 
 def test_non_ascii_api_key_returns_401(client: TestClient) -> None:
-    response = client.post("/v1/itineraries", json=PAYLOAD, headers={"X-API-Key": "clé".encode("latin-1")})
+    response = client.post(
+        "/v1/itineraries", json=PAYLOAD, headers={b"X-API-Key": "clé".encode("latin-1")}
+    )
 
     assert response.status_code == 401
 

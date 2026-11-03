@@ -1,7 +1,7 @@
 """Pydantic models: the single source of truth for the service's data contracts.
 
 There are three groups:
-- ItineraryRequest: what the backend sends us (validated input).
+- ItineraryRequest / RegenerateDayRequest: what the backend sends us (validated input).
 - LLMItinerary: what the model must return. Its JSON Schema is embedded in the prompt,
   and the same model validates the answer, so prompt and parser can never drift apart.
 - ItineraryResponse: what we return. It adds values computed in Python (total cost,
@@ -11,7 +11,14 @@ There are three groups:
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 MAX_DAYS = 14
 
@@ -22,6 +29,13 @@ Euros = Annotated[float, Field(ge=0, le=100_000)]
 
 
 # ---------- Input ----------
+
+
+class KnownActivity(BaseModel):
+    """A real activity from a booking provider (e.g. Amadeus), used to ground the plan."""
+
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
+    price_eur: float | None = Field(default=None, ge=0, le=100_000)
 
 
 class ItineraryRequest(BaseModel):
@@ -44,6 +58,11 @@ class ItineraryRequest(BaseModel):
     days: int = Field(ge=1, le=MAX_DAYS)
     budget_eur: float = Field(gt=0, le=100_000, description="Total trip budget in euros.")
     interests: list[Interest] = Field(default_factory=list, max_length=10)
+    known_activities: list[KnownActivity] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Optional real activities the model should prefer (grounding).",
+    )
 
 
 # ---------- LLM output (structured output schema) ----------
@@ -89,6 +108,26 @@ class LLMItinerary(BaseModel):
         return days
 
 
+class RegenerateDayRequest(BaseModel):
+    """Rewrite one day of an existing plan, optionally following the user's feedback."""
+
+    trip: ItineraryRequest
+    plan: LLMItinerary
+    day: int = Field(ge=1, le=MAX_DAYS)
+    feedback: (
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
+        | None
+    ) = None
+
+    @model_validator(mode="after")
+    def day_exists_in_plan(self) -> "RegenerateDayRequest":
+        if len(self.plan.days) != self.trip.days:
+            raise ValueError("plan must contain exactly trip.days days")
+        if self.day > len(self.plan.days):
+            raise ValueError(f"day must be between 1 and {len(self.plan.days)}")
+        return self
+
+
 # ---------- Output ----------
 
 
@@ -114,6 +153,7 @@ class GenerationMetadata(BaseModel):
     prompt_version: str
     attempts: int
     latency_ms: int
+    cached: bool = False
     usage: TokenUsage = TokenUsage()
 
 

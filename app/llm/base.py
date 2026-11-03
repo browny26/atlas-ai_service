@@ -4,13 +4,22 @@ The service layer depends on this Protocol, not on a concrete SDK. That keeps th
 logic testable (tests inject a fake) and lets us swap providers through configuration.
 """
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Literal, Protocol, TypedDict
+from typing import Any, Literal, Protocol, TypedDict
 
 
 class ChatMessage(TypedDict):
     role: Literal["system", "user", "assistant"]
     content: str
+
+
+@dataclass(frozen=True)
+class JsonSchema:
+    """Expected output structure. Providers that support it enforce it natively."""
+
+    name: str
+    schema: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -44,6 +53,14 @@ class LLMClient(Protocol):
     @property
     def model(self) -> str: ...
 
-    async def complete_json(self, messages: list[ChatMessage]) -> LLMResult:
-        """Return the model's answer, asking the provider for a JSON object."""
+    async def complete_json(
+        self, messages: list[ChatMessage], *, schema: JsonSchema | None = None
+    ) -> LLMResult:
+        """Return the model's whole answer as a JSON object."""
+        ...
+
+    def stream_json(
+        self, messages: list[ChatMessage], *, schema: JsonSchema | None = None
+    ) -> AsyncIterator[str]:
+        """Yield the model's JSON answer chunk by chunk, as it is generated."""
         ...
