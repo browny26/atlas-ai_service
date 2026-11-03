@@ -11,6 +11,7 @@ from fastapi.security import APIKeyHeader
 
 from app.core.config import Settings, get_settings
 from app.llm.base import LLMClient
+from app.services.cache import ItineraryCache
 from app.services.itinerary_service import ItineraryService
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -23,7 +24,8 @@ def require_api_key(settings: SettingsDep, api_key: str | None = Security(_api_k
     expected = settings.service_api_key.get_secret_value()
     if not expected:
         return
-    if api_key is None or not secrets.compare_digest(api_key, expected):
+    # Compare bytes: compare_digest raises TypeError on non-ASCII str (e.g. a header with "é").
+    if api_key is None or not secrets.compare_digest(api_key.encode(), expected.encode()):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API key")
 
 
@@ -33,11 +35,19 @@ def get_llm_client(request: Request) -> LLMClient:
     return client
 
 
+def get_cache(request: Request) -> ItineraryCache | None:
+    cache: ItineraryCache | None = request.app.state.cache
+    return cache
+
+
 def get_itinerary_service(
-    settings: SettingsDep, llm: Annotated[LLMClient, Depends(get_llm_client)]
+    settings: SettingsDep,
+    llm: Annotated[LLMClient, Depends(get_llm_client)],
+    cache: Annotated[ItineraryCache | None, Depends(get_cache)],
 ) -> ItineraryService:
     return ItineraryService(
         llm,
         max_attempts=settings.generation_max_attempts,
         enable_fallback=settings.enable_fallback,
+        cache=cache,
     )

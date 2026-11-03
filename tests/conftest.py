@@ -1,4 +1,5 @@
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -7,27 +8,47 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_llm_client
 from app.core.config import Settings, get_settings
-from app.llm.base import ChatMessage, LLMResult, Usage
+from app.llm.base import ChatMessage, JsonSchema, LLMResult, StreamChunk, Usage
 from app.main import create_app
 
 
 class FakeLLM:
-    """Scripted LLMClient: returns (or raises) the given replies in order, records calls."""
+    """Scripted LLMClient: returns (or raises) the given replies in order, records calls.
 
-    def __init__(self, *replies: str | Exception) -> None:
+    stream_json() sends the same replies split into small chunks, like a real stream.
+    """
+
+    def __init__(self, *replies: str | Exception, chunk_size: int = 7) -> None:
         self._replies = list(replies)
+        self._chunk_size = chunk_size
         self.calls: list[list[ChatMessage]] = []
+        self.schemas: list[JsonSchema | None] = []
 
     @property
     def model(self) -> str:
         return "fake-model"
 
-    async def complete_json(self, messages: list[ChatMessage]) -> LLMResult:
+    def _next(self, messages: list[ChatMessage], schema: JsonSchema | None) -> str:
         self.calls.append(list(messages))
+        self.schemas.append(schema)
         reply = self._replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
-        return LLMResult(content=reply, model=self.model, usage=Usage(100, 50))
+        return reply
+
+    async def complete_json(
+        self, messages: list[ChatMessage], *, schema: JsonSchema | None = None
+    ) -> LLMResult:
+        content = self._next(messages, schema)
+        return LLMResult(content=content, model=self.model, usage=Usage(100, 50))
+
+    async def stream_json(
+        self, messages: list[ChatMessage], *, schema: JsonSchema | None = None
+    ) -> AsyncIterator[StreamChunk]:
+        content = self._next(messages, schema)
+        for start in range(0, len(content), self._chunk_size):
+            yield StreamChunk(content=content[start : start + self._chunk_size])
+        yield StreamChunk(usage=Usage(100, 50))  # like the provider's final usage chunk
 
 
 def make_plan(days: int = 2, activity_cost: float = 20, night_cost: float = 80) -> dict[str, Any]:

@@ -1,0 +1,38 @@
+name: Prompt evaluation
+
+# Runs the prompt against the real LLM when prompts or schemas change (and on demand).
+# Requires the repository secret LLM_API_KEY; without it the job is skipped.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "app/prompts/**"
+      - "app/schemas/**"
+      - "app/services/**"
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    env:
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+    steps:
+      - name: Check secret
+        id: secret
+        run: echo "present=${{ env.LLM_API_KEY != '' }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: steps.secret.outputs.present == 'true'
+      - uses: astral-sh/setup-uv@v6
+        if: steps.secret.outputs.present == 'true'
+        with:
+          python-version: "3.12"
+      - name: Evaluate
+        if: steps.secret.outputs.present == 'true'
+        run: |
+          uv sync --frozen
+          uv run python -m scripts.evaluate --min-valid-rate 0.8 --report evaluation.md
+      - name: Publish report
+        if: always() && steps.secret.outputs.present == 'true'
+        run: cat evaluation.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Skipped
+        if: steps.secret.outputs.present != 'true'
+        run: echo "LLM_API_KEY secret not configured, evaluation skipped." >> "$GITHUB_STEP_SUMMARY"
