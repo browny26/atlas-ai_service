@@ -21,9 +21,10 @@ class Settings(BaseSettings):
     # Ollama locally (http://localhost:11434/v1), OpenAI, ...
     llm_base_url: str = "https://api.groq.com/openai/v1"
     llm_api_key: SecretStr = SecretStr("")
-    llm_model: str = "llama-3.1-8b-instant"
+    llm_model: str = "openai/gpt-oss-20b"
     llm_temperature: float = Field(default=0.3, ge=0.0, le=2.0)
-    llm_max_tokens: int = Field(default=2500, gt=0)
+    # Reasoning models (gpt-oss) count their reasoning tokens in this limit.
+    llm_max_tokens: int = Field(default=8000, gt=0)
     llm_timeout_seconds: float = Field(default=30.0, gt=0)
     # Transport-level retries (timeouts, 429, 5xx), handled by the OpenAI SDK with backoff.
     llm_max_retries: int = Field(default=2, ge=0)
