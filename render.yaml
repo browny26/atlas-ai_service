@@ -1,0 +1,19 @@
+# Render Blueprint: deploys the AI service as a Docker web service.
+# Secrets (LLM_API_KEY, SERVICE_API_KEY) are set in the Render dashboard, never here.
+services:
+  - type: web
+    name: atlas-ai-service
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LLM_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_MODEL
+        value: llama-3.1-8b-instant
+      - key: LLM_API_KEY
+        sync: false
+      - key: SERVICE_API_KEY
+        sync: false
