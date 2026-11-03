@@ -137,7 +137,7 @@ Response (shortened):
   "accommodation": { "name": "…", "type": "B&B", "details": "…", "cost_per_night_eur": 110 },
   "tips": ["Book the Colosseum online to skip the queue"],
   "metadata": {
-    "source": "llm", "model": "llama-3.1-8b-instant", "prompt_version": "itinerary-v2",
+    "source": "llm", "model": "openai/gpt-oss-20b", "prompt_version": "itinerary-v2",
     "attempts": 1, "latency_ms": 1840,
     "usage": { "prompt_tokens": 1210, "completion_tokens": 690, "total_tokens": 1900 }
   }
@@ -229,7 +229,7 @@ All settings are environment variables (see [`.env.example`](.env.example)):
 |---|---|---|
 | `LLM_BASE_URL` | Groq | Any OpenAI-compatible endpoint |
 | `LLM_API_KEY` | – | Provider API key |
-| `LLM_MODEL` | `llama-3.1-8b-instant` | Model name |
+| `LLM_MODEL` | `openai/gpt-oss-20b` | Model name (Groq retired `llama-3.1-8b-instant` in Aug 2026) |
 | `LLM_TIMEOUT_SECONDS` / `LLM_MAX_RETRIES` | `30` / `2` | Transport resilience |
 | `LLM_RESPONSE_FORMAT` | `json_object` | `json_schema` for native structured outputs |
 | `GENERATION_MAX_ATTEMPTS` | `3` | Self-repair attempts on invalid output |

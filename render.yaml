@@ -12,7 +12,9 @@ services:
       - key: LLM_BASE_URL
         value: https://api.groq.com/openai/v1
       - key: LLM_MODEL
-        value: llama-3.1-8b-instant
+        value: openai/gpt-oss-20b
+      - key: LLM_MAX_TOKENS
+        value: "8000"
       - key: LLM_API_KEY
         sync: false
       - key: SERVICE_API_KEY
