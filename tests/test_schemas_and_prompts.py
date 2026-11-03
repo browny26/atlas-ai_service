@@ -3,8 +3,9 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.prompts.itinerary import SYSTEM_PROMPT, build_messages, nights_for
+from app.prompts.itinerary import SYSTEM_PROMPT, build_messages
 from app.schemas.itinerary import ItineraryRequest, LLMItinerary
+from app.services.budget import nights_for, plan_budget
 from app.services.itinerary_service import InvalidLLMOutputError, parse_plan
 from tests.conftest import make_plan
 
@@ -79,3 +80,23 @@ def test_no_real_activities_key_when_none_are_known() -> None:
     _, user = build_messages(ItineraryRequest(destination="Rome", days=2, budget_eur=300))
 
     assert "real_activities" not in user["content"]
+
+
+def test_budget_plan_gives_concrete_targets_under_the_budget() -> None:
+    budget = plan_budget(ItineraryRequest(destination="Rome", days=3, budget_eur=1000))
+
+    assert budget.target_total_eur == 850  # aim at 85%
+    assert budget.max_total_eur == 950  # never above 95%
+    assert budget.nights == 2
+    assert budget.accommodation_per_night_target_eur == 170  # 40% of target / 2 nights
+    assert budget.daily_activities_and_meals_target_eur == 170  # 60% of target / 3 days
+
+
+def test_prompt_contains_the_budget_plan_for_one_traveler() -> None:
+    _, user = build_messages(ItineraryRequest(destination="Rome", days=3, budget_eur=1000))
+
+    payload = json.loads(user["content"].split("\n", 1)[1])
+    assert payload["travelers"] == 1
+    assert payload["budget_plan"]["max_total_eur"] == 950
+    assert payload["budget_plan"]["target_total_eur"] == 850
+    assert "MUST NOT exceed" in SYSTEM_PROMPT

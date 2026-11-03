@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.main import build_llm_client
 from app.prompts.itinerary import PROMPT_VERSION
 from app.schemas.itinerary import BudgetStatus, ItineraryRequest, ItineraryResponse
+from app.services.budget import MAX_SHARE, TARGET_SHARE
 from app.services.itinerary_service import ItineraryService
 
 CASES = [
@@ -43,6 +44,8 @@ class Summary:
     valid: int
     first_try: int
     within_budget: int
+    under_max_share: int
+    avg_budget_used: float
     median_latency_ms: float
     avg_tokens: float
 
@@ -58,6 +61,10 @@ def summarize(results: list[CaseResult]) -> Summary:
         valid=len(ok),
         first_try=sum(r.metadata.attempts == 1 for r in ok),
         within_budget=sum(r.budget_status is BudgetStatus.WITHIN_BUDGET for r in ok),
+        under_max_share=sum(r.total_estimated_cost_eur <= r.budget_eur * MAX_SHARE for r in ok),
+        avg_budget_used=(
+            statistics.mean(r.total_estimated_cost_eur / r.budget_eur for r in ok) if ok else 0
+        ),
         median_latency_ms=statistics.median(r.metadata.latency_ms for r in ok) if ok else 0,
         avg_tokens=statistics.mean(r.metadata.usage.total_tokens for r in ok) if ok else 0,
     )
@@ -72,6 +79,8 @@ def to_markdown(results: list[CaseResult], summary: Summary, model: str) -> str:
         f"| Valid itineraries | {summary.valid}/{summary.total} ({summary.valid_rate:.0%}) |",
         f"| Valid at first attempt | {summary.first_try}/{summary.valid} |",
         f"| Within budget | {summary.within_budget}/{summary.valid} |",
+        f"| Under the {MAX_SHARE:.0%} ceiling | {summary.under_max_share}/{summary.valid} |",
+        f"| Average budget used | {summary.avg_budget_used:.0%} (target {TARGET_SHARE:.0%}) |",
         f"| Median latency | {summary.median_latency_ms:.0f} ms |",
         f"| Average tokens | {summary.avg_tokens:.0f} |",
         "",

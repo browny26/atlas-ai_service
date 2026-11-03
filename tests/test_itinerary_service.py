@@ -1,10 +1,12 @@
+import json
+
 import pytest
 
 from app.llm.base import LLMError
 from app.prompts.itinerary import PROMPT_VERSION
 from app.schemas.itinerary import BudgetStatus, ItineraryRequest, Source
 from app.services.itinerary_service import ItineraryGenerationError, ItineraryService
-from tests.conftest import FakeLLM, plan_json
+from tests.conftest import FakeLLM, make_plan, plan_json
 
 REQUEST = ItineraryRequest(destination="Rome", days=2, budget_eur=500, interests=["food"])
 
@@ -77,10 +79,52 @@ async def test_error_when_fallback_disabled() -> None:
         await make_service(llm, fallback=False).generate(REQUEST)
 
 
-async def test_over_budget_is_detected() -> None:
-    llm = FakeLLM(plan_json(days=2, activity_cost=100, night_cost=100))
+async def test_over_budget_plan_is_sent_back_with_the_amount_to_cut() -> None:
+    over = plan_json(days=2, activity_cost=100, night_cost=100)  # 700 > max 475
+    within = plan_json(days=2, activity_cost=40, night_cost=150)  # 390 <= 475
+    llm = FakeLLM(over, within)
 
-    result = await make_service(llm).generate(REQUEST)  # 600 + 100 > 500
+    result = await make_service(llm).generate(REQUEST)
 
-    assert result.total_estimated_cost_eur == 700
+    assert result.metadata.attempts == 2
+    assert result.total_estimated_cost_eur == 390
+    assert result.budget_status is BudgetStatus.WITHIN_BUDGET
+    feedback = llm.calls[1][-1]["content"]
+    assert "€700" in feedback and "€475" in feedback  # total and maximum
+    assert "Cut at least €275" in feedback  # down to the 85% target (425)
+
+
+async def test_best_attempt_is_kept_when_none_fits_the_budget() -> None:
+    llm = FakeLLM(
+        plan_json(days=2, activity_cost=100, night_cost=100),  # 700
+        plan_json(days=2, activity_cost=80, night_cost=100),  # 580: closest
+        plan_json(days=2, activity_cost=120, night_cost=100),  # 820
+    )
+
+    result = await make_service(llm).generate(REQUEST)
+
+    # A real, slightly-over plan is better than the generic fallback.
+    assert result.metadata.source is Source.LLM
+    assert result.total_estimated_cost_eur == 580
     assert result.budget_status is BudgetStatus.OVER_BUDGET
+
+
+async def test_incoherent_times_and_repeated_places_are_sent_back() -> None:
+    bad = make_plan(days=2)
+    bad["days"][0]["evening"]["time"] = "10:00"  # dinner in the morning
+    bad["days"][1]["morning"]["activity"] = "Museum 1"  # already on day 1
+    llm = FakeLLM(json.dumps(bad), plan_json(days=2))
+
+    result = await make_service(llm).generate(REQUEST)
+
+    feedback = llm.calls[1][-1]["content"]
+    assert "day 1 evening: time 10:00 is outside 18:00-23:59" in feedback
+    assert "'Museum 1' appears more than once" in feedback
+    assert result.metadata.attempts == 2
+
+
+async def test_fallback_template_stays_under_budget() -> None:
+    result = await make_service(FakeLLM(LLMError("down"))).generate(REQUEST)
+
+    assert result.metadata.source is Source.FALLBACK
+    assert result.total_estimated_cost_eur <= REQUEST.budget_eur * 0.85 + 1

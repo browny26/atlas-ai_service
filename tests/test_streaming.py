@@ -96,3 +96,15 @@ async def test_provider_down_without_fallback_streams_error() -> None:
     events = await _collect(ItineraryService(llm, max_attempts=3, enable_fallback=False))
 
     assert [e.event for e in events] == ["error"]
+
+
+async def test_over_budget_stream_is_adjusted_before_the_result() -> None:
+    over = plan_json(days=2, activity_cost=100, night_cost=100)  # 700 > max 475
+    llm = FakeLLM(over, plan_json(days=2))  # then 200
+
+    events = await _collect(ItineraryService(llm, max_attempts=3, enable_fallback=True))
+
+    assert [e.event for e in events] == ["day", "day", "status", "result"]
+    assert "budget" in events[2].data["message"]
+    assert events[-1].data["total_estimated_cost_eur"] == 200
+    assert events[-1].data["budget_status"] == "within_budget"

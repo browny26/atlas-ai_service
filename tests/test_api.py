@@ -42,7 +42,12 @@ def test_stream_endpoint_sends_server_sent_events(client: TestClient) -> None:
 
 def test_regenerate_day_endpoint(app: FastAPI, client: TestClient) -> None:
     plan = make_plan(days=2)
-    new_day = {**plan["days"][0], "day": 2}
+    new_day = {
+        "day": 2,
+        "morning": {"activity": "Vatican Museums", "time": "09:00", "cost_eur": 20},
+        "afternoon": {"activity": "Castel Sant'Angelo", "time": "14:00", "cost_eur": 15},
+        "evening": {"activity": "Dinner in Prati", "time": "20:00", "cost_eur": 30},
+    }
     app.dependency_overrides[get_llm_client] = lambda: FakeLLM(json.dumps(new_day))
 
     response = client.post(
@@ -51,7 +56,7 @@ def test_regenerate_day_endpoint(app: FastAPI, client: TestClient) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["days"][1]["morning"]["activity"] == "Museum 1"
+    assert response.json()["days"][1]["morning"]["activity"] == "Vatican Museums"
 
 
 def test_invalid_request_returns_422(client: TestClient) -> None:

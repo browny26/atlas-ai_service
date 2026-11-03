@@ -69,9 +69,20 @@ class ItineraryRequest(BaseModel):
 
 
 class Activity(BaseModel):
-    activity: Text
+    activity: Text = Field(
+        description=(
+            "A specific, real, named place or experience, with a short practical detail "
+            "(e.g. 'Jerónimos Monastery, Belém - book online to skip the queue'). "
+            "Never generic ('visit a museum')."
+        )
+    )
     time: Time = Field(description="Start time, 24h format HH:MM.")
-    cost_eur: Euros = Field(description="Cost per person in euros, as a number.")
+    cost_eur: Euros = Field(
+        description=(
+            "Realistic current price for one traveler in euros, as a single number "
+            "(ticket, meal or experience). 0 if free."
+        )
+    )
 
 
 class DayPlan(BaseModel):
@@ -86,10 +97,12 @@ class DayPlan(BaseModel):
 
 
 class Accommodation(BaseModel):
-    name: Text
+    name: Text = Field(description="A real accommodation or a precise kind of place.")
     type: Text = Field(description="E.g. hotel, B&B, hostel, apartment.")
     details: Text = Field(description="Neighbourhood and why it fits the trip.")
-    cost_per_night_eur: Euros
+    cost_per_night_eur: Euros = Field(
+        description="Realistic price per night for one traveler, in euros."
+    )
 
 
 class LLMItinerary(BaseModel):
@@ -97,7 +110,11 @@ class LLMItinerary(BaseModel):
 
     days: list[DayPlan] = Field(min_length=1, max_length=MAX_DAYS)
     accommodation: Accommodation
-    tips: list[Text] = Field(min_length=1, max_length=6)
+    tips: list[Text] = Field(
+        min_length=1,
+        max_length=6,
+        description="3-5 practical, destination-specific tips (transport, booking, saving).",
+    )
 
     @field_validator("days")
     @classmethod

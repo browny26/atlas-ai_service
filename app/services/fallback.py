@@ -4,18 +4,18 @@ Responses built from it carry metadata.source = "fallback", so callers can tell 
 user the plan is generic, instead of passing it off as an AI result.
 """
 
-from app.prompts.itinerary import nights_for
-from app.schemas.itinerary import Accommodation, Activity, DayPlan, ItineraryRequest, LLMItinerary
+import math
 
-_ACCOMMODATION_SHARE = 0.4  # share of the budget reserved for accommodation
-_SPEND_RATIO = 0.9  # plan to spend 90% of the budget, leaving a margin
+from app.schemas.itinerary import Accommodation, Activity, DayPlan, ItineraryRequest, LLMItinerary
+from app.services.budget import plan_budget
 
 
 def build_fallback_plan(request: ItineraryRequest) -> LLMItinerary:
-    budget = request.budget_eur * _SPEND_RATIO
-    nights = nights_for(request.days)
-    per_night = round(budget * _ACCOMMODATION_SHARE / nights, 2)
-    per_activity = round(budget * (1 - _ACCOMMODATION_SHARE) / (request.days * 3), 2)
+    # Same targets the LLM gets: the template stays under budget too.
+    budget = plan_budget(request)
+    per_night = budget.accommodation_per_night_target_eur
+    # Rounded down: a template that must stay under budget never rounds up.
+    per_activity = math.floor(budget.daily_activities_and_meals_target_eur / 3 * 100) / 100
     place = request.destination
 
     days = [
