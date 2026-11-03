@@ -1,7 +1,26 @@
 # Local development: `docker compose up --build`, then open http://localhost:8000/docs
+#
+# Default: the LLM configured in .env (e.g. Groq).
+# Free local mode: `docker compose --profile ollama up --build`, then once:
+#   docker compose exec ollama ollama pull mistral:7b
+# and in .env: LLM_BASE_URL=http://ollama:11434/v1 and LLM_MODEL=mistral:7b
+# ("localhost" inside a container is the container itself, not your machine).
 services:
   ai-service:
     build: .
     ports:
       - "8000:8000"
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
+
+  ollama:
+    image: ollama/ollama:0.12.6
+    profiles: [ollama]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+
+volumes:
+  ollama-models:

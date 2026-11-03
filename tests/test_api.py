@@ -39,6 +39,12 @@ def test_missing_api_key_returns_401(client: TestClient) -> None:
     assert response.status_code == 401
 
 
+def test_non_ascii_api_key_returns_401(client: TestClient) -> None:
+    response = client.post("/v1/itineraries", json=PAYLOAD, headers={"X-API-Key": "clé".encode("latin-1")})
+
+    assert response.status_code == 401
+
+
 def test_provider_down_without_fallback_returns_502(
     app: FastAPI, client: TestClient, settings: Settings
 ) -> None:

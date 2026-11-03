@@ -22,4 +22,5 @@ USER appuser
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s \
     CMD python -c "import urllib.request,os; urllib.request.urlopen(f'http://localhost:{os.environ[\"PORT\"]}/health')"
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
+# exec: uvicorn replaces the shell as PID 1 and receives SIGTERM for a graceful shutdown.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]

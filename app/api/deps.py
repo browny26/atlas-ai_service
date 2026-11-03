@@ -23,7 +23,8 @@ def require_api_key(settings: SettingsDep, api_key: str | None = Security(_api_k
     expected = settings.service_api_key.get_secret_value()
     if not expected:
         return
-    if api_key is None or not secrets.compare_digest(api_key, expected):
+    # Compare bytes: compare_digest raises TypeError on non-ASCII str (e.g. a header with "é").
+    if api_key is None or not secrets.compare_digest(api_key.encode(), expected.encode()):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing API key")
 
 
