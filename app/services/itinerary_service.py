@@ -41,7 +41,7 @@ from app.schemas.itinerary import (
 from app.services.budget import budget_status, estimate_total_cost
 from app.services.cache import ItineraryCache, cache_key
 from app.services.fallback import build_fallback_plan
-from app.services.streaming import extract_completed_days
+from app.services.streaming import DayStreamParser
 
 logger = logging.getLogger(__name__)
 
@@ -148,16 +148,17 @@ class ItineraryService:
         messages = build_messages(request)
         source = Source.LLM
         try:
-            buffer = ""
-            seen = 0
+            parts: list[str] = []
+            parser = DayStreamParser()
             async for chunk in self._llm.stream_json(messages, schema=ITINERARY_SCHEMA):
-                buffer += chunk
-                completed = extract_completed_days(buffer)
-                for raw_day in completed[seen:]:
+                if chunk.usage:
+                    stats.usage += chunk.usage
+                parts.append(chunk.content)
+                for raw_day in parser.feed(chunk.content):
                     # An invalid day is skipped: the final validation reports and repairs it.
                     with suppress(InvalidLLMOutputError):
                         yield StreamEvent("day", _validate(DayPlan, raw_day).model_dump())
-                seen = len(completed)
+            buffer = "".join(parts)
 
             try:
                 plan = parse_plan(buffer, request.days)

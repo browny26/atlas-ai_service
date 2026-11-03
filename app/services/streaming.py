@@ -6,55 +6,73 @@ whole answer is finished.
 """
 
 
-def extract_completed_days(text: str) -> list[str]:
-    """Return the raw JSON of every fully-written object in the top-level "days" array.
+class DayStreamParser:
+    """Finds the fully-written objects of the top-level "days" array, chunk by chunk.
 
     A small state machine instead of a regex: it tracks strings (and escapes inside them)
-    and nesting depth, so braces inside activity names cannot confuse it.
+    and nesting depth, so braces inside activity names cannot confuse it. The state is
+    kept between calls, so each character is scanned once: the total work is linear in
+    the answer length, however many chunks it arrives in.
     """
-    days: list[str] = []
-    depth = 0
-    in_string = False
-    escaped = False
-    string_start = -1
-    last_key = ""
-    expecting_key = False
-    in_days = False
-    day_start = -1
 
-    for i, char in enumerate(text):
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-                if depth == 1 and expecting_key:
-                    last_key = text[string_start + 1 : i]
-            continue
+    def __init__(self) -> None:
+        self._text: list[str] = []  # characters of the day currently being written
+        self._depth = 0
+        self._in_string = False
+        self._escaped = False
+        self._string: list[str] = []  # current depth-1 string (a possible key)
+        self._last_key = ""
+        self._expecting_key = False
+        self._in_days = False
+        self._in_day = False
 
-        if char == '"':
-            in_string = True
-            string_start = i
-        elif char in "{[":
-            depth += 1
-            if depth == 1:
-                expecting_key = True
-            elif depth == 2 and char == "[" and last_key == "days":
-                in_days = True
-            elif depth == 3 and char == "{" and in_days:
-                day_start = i
-        elif char in "}]":
-            if depth == 3 and char == "}" and in_days and day_start >= 0:
-                days.append(text[day_start : i + 1])
-                day_start = -1
-            elif depth == 2 and char == "]":
-                in_days = False
-            depth -= 1
-        elif depth == 1:
-            if char == ":":
-                expecting_key = False
-            elif char == ",":
-                expecting_key = True
-    return days
+    def feed(self, chunk: str) -> list[str]:
+        """Consume the next chunk; return the raw JSON of the days completed in it."""
+        completed: list[str] = []
+        for char in chunk:
+            if self._in_day:
+                self._text.append(char)
+
+            if self._in_string:
+                if self._escaped:
+                    self._escaped = False
+                elif char == "\\":
+                    self._escaped = True
+                elif char == '"':
+                    self._in_string = False
+                    if self._depth == 1 and self._expecting_key:
+                        self._last_key = "".join(self._string)
+                elif self._depth == 1:
+                    self._string.append(char)
+                continue
+
+            if char == '"':
+                self._in_string = True
+                self._string = []
+            elif char in "{[":
+                self._depth += 1
+                if self._depth == 1:
+                    self._expecting_key = True
+                elif self._depth == 2 and char == "[" and self._last_key == "days":
+                    self._in_days = True
+                elif self._depth == 3 and char == "{" and self._in_days:
+                    self._in_day = True
+                    self._text = [char]
+            elif char in "}]":
+                if self._depth == 3 and char == "}" and self._in_day:
+                    completed.append("".join(self._text))
+                    self._in_day = False
+                elif self._depth == 2 and char == "]":
+                    self._in_days = False
+                self._depth -= 1
+            elif self._depth == 1:
+                if char == ":":
+                    self._expecting_key = False
+                elif char == ",":
+                    self._expecting_key = True
+        return completed
+
+
+def extract_completed_days(text: str) -> list[str]:
+    """Every fully-written day object in `text` (one-shot use of the parser)."""
+    return DayStreamParser().feed(text)

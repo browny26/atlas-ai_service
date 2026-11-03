@@ -3,7 +3,7 @@ import json
 from app.llm.base import LLMError
 from app.schemas.itinerary import ItineraryRequest
 from app.services.itinerary_service import ItineraryService, StreamEvent
-from app.services.streaming import extract_completed_days
+from app.services.streaming import DayStreamParser, extract_completed_days
 from tests.conftest import FakeLLM, make_plan, plan_json
 
 REQUEST = ItineraryRequest(destination="Rome", days=2, budget_eur=500)
@@ -29,6 +29,28 @@ def test_braces_and_keys_inside_strings_are_ignored() -> None:
     assert json.loads(days[0])["morning"]["activity"].startswith("Visit")
 
 
+def test_parser_keeps_state_across_chunks() -> None:
+    full = plan_json(days=3)
+    parser = DayStreamParser()
+
+    days = [day for i in range(0, len(full), 3) for day in parser.feed(full[i : i + 3])]
+
+    assert days == extract_completed_days(full)
+    assert [json.loads(d)["day"] for d in days] == [1, 2, 3]
+
+
+def test_each_day_is_returned_once() -> None:
+    full = plan_json(days=2)
+    parser = DayStreamParser()
+    cut = full.index('"day": 2')
+
+    first = parser.feed(full[:cut])
+    rest = parser.feed(full[cut:])
+
+    assert len(first) == 1
+    assert len(rest) == 1
+
+
 def test_no_days_key_yet() -> None:
     assert extract_completed_days('{"accommodation": {"name": "Hotel') == []
 
@@ -45,6 +67,7 @@ async def test_days_are_streamed_before_the_result() -> None:
     assert [e.event for e in events] == ["day", "day", "result"]
     assert events[0].data["day"] == 1
     assert events[-1].data["metadata"]["source"] == "llm"
+    assert events[-1].data["metadata"]["usage"]["total_tokens"] == 150  # streamed usage counted
 
 
 async def test_invalid_stream_is_repaired_and_result_is_authoritative() -> None:
@@ -55,6 +78,7 @@ async def test_invalid_stream_is_repaired_and_result_is_authoritative() -> None:
     assert [e.event for e in events] == ["day", "status", "result"]
     assert len(events[-1].data["days"]) == 2
     assert events[-1].data["metadata"]["attempts"] == 2
+    assert events[-1].data["metadata"]["usage"]["total_tokens"] == 300  # stream + repair
 
 
 async def test_provider_down_streams_fallback_result() -> None:

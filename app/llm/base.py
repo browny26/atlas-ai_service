@@ -45,6 +45,14 @@ class LLMResult:
     usage: Usage = field(default_factory=Usage)
 
 
+@dataclass(frozen=True)
+class StreamChunk:
+    """A piece of a streamed answer. The last chunk usually carries the token usage."""
+
+    content: str = ""
+    usage: Usage | None = None
+
+
 class LLMError(Exception):
     """The provider could not be reached or returned an error (after transport retries)."""
 
@@ -61,6 +69,6 @@ class LLMClient(Protocol):
 
     def stream_json(
         self, messages: list[ChatMessage], *, schema: JsonSchema | None = None
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         """Yield the model's JSON answer chunk by chunk, as it is generated."""
         ...

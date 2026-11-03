@@ -104,22 +104,31 @@ async def test_json_schema_mode_sends_the_schema() -> None:
     }
 
 
-async def test_stream_yields_content_chunks() -> None:
-    def chunk(text: str) -> str:
+async def test_stream_yields_content_and_usage() -> None:
+    sent: dict[str, object] = {}
+
+    def chunk(text: str | None, usage: dict[str, int] | None = None) -> str:
+        choices = [] if text is None else [{"index": 0, "delta": {"content": text}}]
         body = {
             "id": "1",
             "object": "chat.completion.chunk",
             "created": 0,
             "model": "test-model",
-            "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+            "choices": choices,
+            "usage": usage,
         }
         return f"data: {json.dumps(body)}\n\n"
 
     def handler(request: httpx2.Request) -> httpx2.Response:
-        body = chunk('{"a"') + chunk(": 1}") + "data: [DONE]\n\n"
+        sent.update(json.loads(request.content))
+        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        body = chunk('{"a"') + chunk(": 1}") + chunk(None, usage) + "data: [DONE]\n\n"
         return httpx2.Response(200, text=body, headers={"content-type": "text/event-stream"})
 
     client = make_client(httpx2.MockTransport(handler))
     chunks = [c async for c in client.stream_json([{"role": "user", "content": "hi"}])]
 
-    assert "".join(chunks) == '{"a": 1}'
+    assert sent["stream_options"] == {"include_usage": True}
+    assert "".join(c.content for c in chunks) == '{"a": 1}'
+    assert chunks[-1].usage is not None
+    assert chunks[-1].usage.total_tokens == 15

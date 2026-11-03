@@ -9,7 +9,7 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.shared_params import ResponseFormatJSONObject, ResponseFormatJSONSchema
 
-from app.llm.base import ChatMessage, JsonSchema, LLMError, LLMResult, Usage
+from app.llm.base import ChatMessage, JsonSchema, LLMError, LLMResult, StreamChunk, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class OpenAICompatibleClient:
 
     async def stream_json(
         self, messages: list[ChatMessage], *, schema: JsonSchema | None = None
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[StreamChunk]:
         try:
             stream = await self._client.chat.completions.create(
                 model=self._model,
@@ -102,10 +102,18 @@ class OpenAICompatibleClient:
                 max_tokens=self._max_tokens,
                 response_format=self._format(schema),
                 stream=True,
+                # Without this, streamed responses report no token usage.
+                stream_options={"include_usage": True},
             )
             async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
+                content = chunk.choices[0].delta.content if chunk.choices else None
+                usage = (
+                    Usage(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+                    if chunk.usage
+                    else None
+                )
+                if content or usage:
+                    yield StreamChunk(content=content or "", usage=usage)
         except openai.APIError as exc:
             logger.warning("LLM provider error while streaming: %s", exc)
             raise LLMError(str(exc)) from exc
