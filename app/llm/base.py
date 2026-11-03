@@ -57,6 +57,18 @@ class LLMError(Exception):
     """The provider could not be reached or returned an error (after transport retries)."""
 
 
+class LLMOutputRejectedError(LLMError):
+    """The provider rejected the model's answer, e.g. Groq's server-side JSON validation.
+
+    The provider itself works: asking again with feedback usually succeeds, so this is
+    handled like invalid output, not like an outage.
+    """
+
+    def __init__(self, message: str, failed_output: str = "") -> None:
+        super().__init__(message)
+        self.failed_output = failed_output
+
+
 class LLMClient(Protocol):
     @property
     def model(self) -> str: ...

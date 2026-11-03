@@ -4,8 +4,9 @@ Flow: prompt -> LLM -> validation -> quality checks -> (repair) -> calculations 
 
 Failures are handled at three levels:
 - transport errors (timeouts, 429, 5xx) are retried by the LLM client;
-- invalid output (wrong structure, wrong number of days) is sent back to the model with
-  the validation errors, so that it fixes its answer ("self-repair");
+- invalid output (wrong structure, wrong number of days, or JSON the provider itself
+  rejected) is sent back to the model with the errors, so that it fixes its answer
+  ("self-repair");
 - valid output that breaks content rules (over budget, incoherent times, repeated places)
   is sent back with precise feedback; if no attempt is perfect, the best one is kept.
 Only when no valid itinerary at all is produced, a clearly-flagged fallback is returned
@@ -21,7 +22,14 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from app.llm.base import ChatMessage, JsonSchema, LLMClient, LLMError, Usage
+from app.llm.base import (
+    ChatMessage,
+    JsonSchema,
+    LLMClient,
+    LLMError,
+    LLMOutputRejectedError,
+    Usage,
+)
 from app.prompts.itinerary import (
     DAY_SCHEMA,
     ITINERARY_SCHEMA,
@@ -58,6 +66,18 @@ class InvalidLLMOutputError(Exception):
 
 class ItineraryGenerationError(Exception):
     """No valid itinerary could be produced."""
+
+
+_REJECTED_JSON = "The answer was not a single valid JSON object (it was cut off or malformed)."
+
+
+def _rejected_answer_follow_up(
+    exc: LLMOutputRejectedError, partial_output: str = ""
+) -> list[ChatMessage]:
+    """Messages asking the model to fix an answer the provider rejected."""
+    rejected = exc.failed_output or partial_output
+    answer: list[ChatMessage] = [{"role": "assistant", "content": rejected}] if rejected else []
+    return [*answer, build_repair_message(_REJECTED_JSON)]
 
 
 def _validate[M: BaseModel](model: type[M], content: str) -> M:
@@ -157,40 +177,56 @@ class ItineraryService:
         try:
             parts: list[str] = []
             parser = DayStreamParser()
-            async for chunk in self._llm.stream_json(messages, schema=ITINERARY_SCHEMA):
-                if chunk.usage:
-                    stats.usage += chunk.usage
-                parts.append(chunk.content)
-                for raw_day in parser.feed(chunk.content):
-                    # An invalid day is skipped: the final validation reports and repairs it.
-                    with suppress(InvalidLLMOutputError):
-                        yield StreamEvent("day", _validate(DayPlan, raw_day).model_dump())
+            rejected: LLMOutputRejectedError | None = None
+            try:
+                async for chunk in self._llm.stream_json(messages, schema=ITINERARY_SCHEMA):
+                    if chunk.usage:
+                        stats.usage += chunk.usage
+                    parts.append(chunk.content)
+                    for raw_day in parser.feed(chunk.content):
+                        # An invalid day is skipped: the final validation reports and repairs it.
+                        with suppress(InvalidLLMOutputError):
+                            yield StreamEvent("day", _validate(DayPlan, raw_day).model_dump())
+            except LLMOutputRejectedError as exc:
+                rejected = exc
             buffer = "".join(parts)
 
             # The streamed days may still change: the final "result" event is authoritative.
             follow_up: dict[str, Any] = {}
-            try:
-                plan = parse_plan(buffer, request.days)
-            except InvalidLLMOutputError as exc:
-                follow_up = {"feedback": build_repair_message(str(exc)), "last_error": exc}
+            if rejected is not None:
+                logger.info("Streamed answer rejected by the provider")
+                follow_up = {
+                    "messages": _rejected_answer_follow_up(rejected, buffer),
+                    "last_error": InvalidLLMOutputError(_REJECTED_JSON),
+                }
                 status = "Fixing the itinerary format..."
             else:
-                assessment = assess_plan(plan, budget)
-                if not assessment.ok:
-                    logger.info("Streamed plan needs improvements:\n%s", assessment.issues)
-                    follow_up = {
-                        "feedback": build_improvement_message(assessment.issues),
-                        "best": (assessment, plan),
-                    }
-                    status = (
-                        "Adjusting the plan to stay within your budget..."
-                        if assessment.over_budget_eur > 0
-                        else "Polishing the itinerary..."
-                    )
+                try:
+                    plan = parse_plan(buffer, request.days)
+                except InvalidLLMOutputError as exc:
+                    follow_up = {"feedback": build_repair_message(str(exc)), "last_error": exc}
+                    status = "Fixing the itinerary format..."
+                else:
+                    assessment = assess_plan(plan, budget)
+                    if not assessment.ok:
+                        logger.info("Streamed plan needs improvements:\n%s", assessment.issues)
+                        follow_up = {
+                            "feedback": build_improvement_message(assessment.issues),
+                            "best": (assessment, plan),
+                        }
+                        status = (
+                            "Adjusting the plan to stay within your budget..."
+                            if assessment.over_budget_eur > 0
+                            else "Polishing the itinerary..."
+                        )
             if follow_up and self._max_attempts > 1:
                 yield StreamEvent("status", {"message": status})
+                follow_up_messages = follow_up.get("messages") or [
+                    {"role": "assistant", "content": buffer},
+                    follow_up["feedback"],
+                ]
                 plan = await self._complete_validated(
-                    [*messages, {"role": "assistant", "content": buffer}, follow_up["feedback"]],
+                    [*messages, *follow_up_messages],
                     ITINERARY_SCHEMA,
                     lambda content: parse_plan(content, request.days),
                     stats,
@@ -262,6 +298,11 @@ class ItineraryService:
             stats.attempts = attempt
             try:
                 result = await self._llm.complete_json(messages, schema=schema)
+            except LLMOutputRejectedError as exc:
+                logger.info("Attempt %d/%d rejected by the provider", attempt, self._max_attempts)
+                last_error = InvalidLLMOutputError(_REJECTED_JSON)
+                messages = [*messages, *_rejected_answer_follow_up(exc)]
+                continue
             except LLMError:
                 if best is None:
                     raise

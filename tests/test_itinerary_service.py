@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from app.llm.base import LLMError
+from app.llm.base import LLMError, LLMOutputRejectedError
 from app.prompts.itinerary import PROMPT_VERSION
 from app.schemas.itinerary import BudgetStatus, ItineraryRequest, Source
 from app.services.itinerary_service import ItineraryGenerationError, ItineraryService
@@ -157,3 +157,24 @@ async def test_same_place_with_different_details_counts_as_a_repetition() -> Non
     await make_service(llm).generate(REQUEST)
 
     assert "appears more than once" in llm.calls[1][-1]["content"]
+
+
+async def test_json_rejected_by_the_provider_is_repaired() -> None:
+    llm = FakeLLM(LLMOutputRejectedError("json_validate_failed", '{"days": ['), plan_json(days=2))
+
+    result = await make_service(llm).generate(REQUEST)
+
+    assert result.metadata.source is Source.LLM
+    assert result.metadata.attempts == 2
+    # The model sees its rejected answer and is asked to fix it.
+    assert llm.calls[1][-2] == {"role": "assistant", "content": '{"days": ['}
+    assert "not a single valid JSON object" in llm.calls[1][-1]["content"]
+
+
+async def test_fallback_when_the_provider_rejects_every_answer() -> None:
+    llm = FakeLLM(*[LLMOutputRejectedError("json_validate_failed")] * 3)
+
+    result = await make_service(llm).generate(REQUEST)
+
+    assert result.metadata.source is Source.FALLBACK
+    assert result.metadata.attempts == 3

@@ -1,6 +1,6 @@
 import json
 
-from app.llm.base import LLMError
+from app.llm.base import LLMError, LLMOutputRejectedError
 from app.schemas.itinerary import ItineraryRequest
 from app.services.itinerary_service import ItineraryService, StreamEvent
 from app.services.streaming import DayStreamParser, extract_completed_days
@@ -79,6 +79,19 @@ async def test_invalid_stream_is_repaired_and_result_is_authoritative() -> None:
     assert len(events[-1].data["days"]) == 2
     assert events[-1].data["metadata"]["attempts"] == 2
     assert events[-1].data["metadata"]["usage"]["total_tokens"] == 300  # stream + repair
+
+
+async def test_stream_rejected_by_the_provider_is_retried() -> None:
+    # Groq returned json_validate_failed at the end of the stream: production served the
+    # fallback right away. The answer must be repaired like any other invalid output.
+    llm = FakeLLM(LLMOutputRejectedError("json_validate_failed", '{"days": ['), plan_json(days=2))
+
+    events = await _collect(ItineraryService(llm, max_attempts=3, enable_fallback=True))
+
+    assert [e.event for e in events] == ["status", "result"]
+    assert events[-1].data["metadata"]["source"] == "llm"
+    assert events[-1].data["metadata"]["attempts"] == 2
+    assert llm.calls[1][-2] == {"role": "assistant", "content": '{"days": ['}
 
 
 async def test_provider_down_streams_fallback_result() -> None:
